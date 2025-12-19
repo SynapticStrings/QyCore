@@ -22,7 +22,8 @@ defmodule QyCore.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:orchid, "~> 0.3"}
+      {:orchid, "~> 0.3"},
+      {:gen_stage, "~> 1.3.2"}
     ]
   end
 end
