@@ -1,10 +1,10 @@
-defmodule QyCore.Orchid.Executor.GenStage do
+defmodule Orchid.Executor.GenStage do
   @moduledoc """
   A simple GenStage-based executor.
   """
   @behaviour Orchid.Executor
 
-  alias QyCore.Orchid.Executor.GenStage.{Dispatcher, Worker}
+  alias Orchid.Executor.GenStage.{Dispatcher, Worker}
 
   @impl true
   def execute(ctx, opts) do

@@ -1,4 +1,4 @@
-defmodule QyCore.Orchid.Executor.GenStage.Dispatcher do
+defmodule Orchid.Executor.GenStage.Dispatcher do
     use GenStage
     alias Orchid.Scheduler
 

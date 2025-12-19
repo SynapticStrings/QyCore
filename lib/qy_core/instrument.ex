@@ -1,9 +1,9 @@
 defmodule QyCore.Instrument do
-    @moduledoc """
-  Behaviour for Instrument servers.
+  @moduledoc """
+  Behaviour and GenServer foundation for QyCore Instruments.
 
   An Instrument is a supervised GenServer that:
-  1. Manages a service handle (HTTP client, NIF, Axon model, etc.)
+  1. Manages a service handle (HTTP client, NIF, Nx.Serving, etc.)
   2. Owns local ETS storage for large params
   3. Executes computation where the data lives
   4. Supports persist/restore for checkpoint & resume
@@ -13,13 +13,14 @@ defmodule QyCore.Instrument do
       defmodule MyApp.Instruments.Embedder do
         use QyCore.Instrument
 
+        @impl true
         def handle_init(config) do
-          # Custom initialization
           {:ok, state} = super(config)
           model = load_model(config[:model_path])
           {:ok, %{state | handle: model}}
         end
 
+        @impl true
         def handle_run(request, opts, state) do
           result = compute_embedding(state.handle, request)
           {:ok, result, state}
@@ -30,27 +31,34 @@ defmodule QyCore.Instrument do
 
   Instruments can be called remotely via `{name, node}` addressing:
 
-      QyCore.Instrument.run({:embedder, :"worker@host"}, request)
+      MyInstrument.run(request, instrument: {:embedder, :"worker@host"})
   """
+
+  # ============================================
+  # Types
+  # ============================================
 
   @type name :: atom()
   @type config :: keyword()
+  @type key :: String.t()
+  @type ref :: {:ref, name(), key()}
+
+  @type meta :: %{
+          name: name(),
+          key_counter: non_neg_integer(),
+          recipe_id: String.t() | nil,
+          step_name: atom() | nil
+        }
+
   @type state :: %{
-          table: :ets.tid(),
+          table: :ets.tid() | nil,
           handle: term(),
           config: config(),
           meta: meta()
         }
-  @type meta :: %{
-          name: name(),
-          key_counter: pos_integer(),
-          recipe_id: String.t() | nil,
-          step_name: atom() | nil
-        }
-  @type ref :: {:ref, name(), key :: String.t()}
 
   # ============================================
-  # Callbacks (implement these)
+  # Callbacks
   # ============================================
 
   @doc "Initialize instrument state. Called on start."
@@ -62,16 +70,16 @@ defmodule QyCore.Instrument do
               | {:error, reason :: term(), state()}
 
   @doc "Store a value. Default uses ETS."
-  @callback handle_store(key :: String.t(), value :: term(), state()) ::
+  @callback handle_store(key(), value :: term(), state()) ::
               {:ok, ref(), state()}
 
   @doc "Fetch a value by key. Default uses ETS."
-  @callback handle_fetch(key :: String.t(), state()) ::
+  @callback handle_fetch(key(), state()) ::
               {:ok, value :: term(), state()}
               | {:error, :not_found, state()}
 
   @doc "Delete a value by key. Default uses ETS."
-  @callback handle_delete(key :: String.t(), state()) ::
+  @callback handle_delete(key(), state()) ::
               {:ok, state()}
               | {:error, :not_found, state()}
 
@@ -83,49 +91,14 @@ defmodule QyCore.Instrument do
   @callback handle_restore(path :: Path.t(), state()) ::
               {:ok, state()} | {:error, term()}
 
-  @doc "Cleanup on termination. Override for custom cleanup."
+  @doc "Cleanup on termination."
   @callback handle_cleanup(reason :: term(), state()) :: :ok
-
-  # ============================================
-  # Client API (auto-generated)
-  # ============================================
-
-  @doc "Start the Instrument under a supervisor"
-  @callback start_link(config()) :: GenServer.on_start()
-
-  @doc "Execute a computation"
-  @callback run(request :: term(), opts :: keyword()) ::
-              {:ok, term()} | {:error, term()}
-
-  @doc "Store a value, receive a ref"
-  @callback store(value :: term(), opts :: keyword()) ::
-              {:ok, ref()} | {:error, term()}
-
-  @doc "Fetch a value by ref or key"
-  @callback fetch(ref() | String.t()) ::
-              {:ok, term()} | {:error, :not_found}
-
-  @doc "Delete a value by ref or key"
-  @callback delete(ref() | String.t()) ::
-              :ok | {:error, :not_found}
-
-  @doc "Persist to disk"
-  @callback persist(path :: Path.t()) :: :ok | {:error, term()}
-
-  @doc "Restore from disk"
-  @callback restore(path :: Path.t()) :: :ok | {:error, term()}
-
-  @doc "Set context for key generation"
-  @callback set_context(recipe_id :: String.t(), step_name :: atom()) :: :ok
-
-  @doc "Clear context"
-  @callback clear_context() :: :ok
 
   # ============================================
   # __using__ macro
   # ============================================
 
-  defmacro __using__(opts) do
+  defmacro __using__(opts \\ []) do
     quote location: :keep do
       @behaviour QyCore.Instrument
       use GenServer
@@ -135,9 +108,12 @@ defmodule QyCore.Instrument do
       # ----------------------------------------
       # Child spec
       # ----------------------------------------
+
       def child_spec(config) do
+        name = Keyword.get(config, :name, __MODULE__)
+
         %{
-          id: __MODULE__,
+          id: name,
           start: {__MODULE__, :start_link, [config]},
           type: :worker,
           restart: Keyword.get(@instrument_opts, :restart, :permanent)
@@ -147,56 +123,81 @@ defmodule QyCore.Instrument do
       # ----------------------------------------
       # Client API
       # ----------------------------------------
-      def start_link(config) do
+
+      def start_link(config \\ []) do
         name = Keyword.get(config, :name, __MODULE__)
         GenServer.start_link(__MODULE__, config, name: name)
       end
 
+      @doc "Execute a computation"
       def run(request, opts \\ []) do
         name = Keyword.get(opts, :instrument, __MODULE__)
         timeout = Keyword.get(opts, :timeout, 30_000)
         GenServer.call(name, {:run, request, opts}, timeout)
       end
 
+      @doc "Store a value, receive a ref"
       def store(value, opts \\ []) do
         name = Keyword.get(opts, :instrument, __MODULE__)
         GenServer.call(name, {:store, value, opts})
       end
 
-      def fetch(ref_or_key) do
-        {name, key} = parse_ref(ref_or_key)
+      @doc "Fetch a value by ref or key"
+      def fetch(ref_or_key, opts \\ []) do
+        {name, key} = parse_ref(ref_or_key, opts)
         GenServer.call(name, {:fetch, key})
       end
 
-      def delete(ref_or_key) do
-        {name, key} = parse_ref(ref_or_key)
+      @doc "Delete a value by ref or key"
+      def delete(ref_or_key, opts \\ []) do
+        {name, key} = parse_ref(ref_or_key, opts)
         GenServer.call(name, {:delete, key})
       end
 
-      def persist(path) do
-        GenServer.call(__MODULE__, {:persist, path})
+      @doc "Persist to disk"
+      def persist(path, opts \\ []) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        GenServer.call(name, {:persist, path})
       end
 
-      def restore(path) do
-        GenServer.call(__MODULE__, {:restore, path})
+      @doc "Restore from disk (call on running instrument)"
+      def restore(path, opts \\ []) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        GenServer.call(name, {:restore, path})
       end
 
-      def set_context(recipe_id, step_name) do
-        GenServer.cast(__MODULE__, {:set_context, recipe_id, step_name})
+      @doc "Set context for key generation (recipe_id, step_name)"
+      def set_context(recipe_id, step_name, opts \\ []) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        GenServer.cast(name, {:set_context, recipe_id, step_name})
       end
 
-      def clear_context do
-        GenServer.cast(__MODULE__, :clear_context)
+      @doc "Clear context"
+      def clear_context(opts \\ []) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        GenServer.cast(name, :clear_context)
       end
 
-      defp parse_ref({:ref, name, key}), do: {name, key}
-      defp parse_ref(key) when is_binary(key), do: {__MODULE__, key}
+      @doc "Get current state info (for debugging)"
+      def info(opts \\ []) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        GenServer.call(name, :info)
+      end
+
+      defp parse_ref({:ref, ref_name, key}, _opts), do: {ref_name, key}
+
+      defp parse_ref(key, opts) when is_binary(key) do
+        name = Keyword.get(opts, :instrument, __MODULE__)
+        {name, key}
+      end
 
       # ----------------------------------------
       # GenServer callbacks
       # ----------------------------------------
+
       @impl GenServer
       def init(config) do
+        # Check if restoring from checkpoint
         case Keyword.get(config, :restore_from) do
           nil ->
             handle_init(config)
@@ -205,19 +206,17 @@ defmodule QyCore.Instrument do
             with {:ok, state} <- handle_init(config),
                  {:ok, state} <- handle_restore(path, state) do
               {:ok, state}
+            else
+              {:error, reason} -> {:stop, reason}
             end
         end
       end
 
       @impl GenServer
       def handle_call({:run, request, opts}, _from, state) do
-        case handle_run(request, opts, state) do
-          {:ok, response, new_state} ->
-            {:reply, {:ok, response}, new_state}
+        {flag, response, new_state} = handle_run(request, opts, state)
 
-          {:error, reason, new_state} ->
-            {:reply, {:error, reason}, new_state}
-        end
+        {:reply, {flag, response}, new_state}
       end
 
       def handle_call({:store, value, opts}, _from, state) do
@@ -228,15 +227,21 @@ defmodule QyCore.Instrument do
 
       def handle_call({:fetch, key}, _from, state) do
         case handle_fetch(key, state) do
-          {:ok, value, new_state} -> {:reply, {:ok, value}, new_state}
-          {:error, :not_found, new_state} -> {:reply, {:error, :not_found}, new_state}
+          {:ok, value, new_state} ->
+            {:reply, {:ok, value}, new_state}
+
+          {:error, :not_found, new_state} ->
+            {:reply, {:error, :not_found}, new_state}
         end
       end
 
       def handle_call({:delete, key}, _from, state) do
         case handle_delete(key, state) do
-          {:ok, new_state} -> {:reply, :ok, new_state}
-          {:error, :not_found, new_state} -> {:reply, {:error, :not_found}, new_state}
+          {:ok, new_state} ->
+            {:reply, :ok, new_state}
+
+          {:error, :not_found, new_state} ->
+            {:reply, {:error, :not_found}, new_state}
         end
       end
 
@@ -253,6 +258,25 @@ defmodule QyCore.Instrument do
           {:error, reason} -> {:reply, {:error, reason}, state}
         end
       end
+
+      def handle_call(:info, _from, state) do
+        info = %{
+          meta: state.meta,
+          config: state.config,
+          table_size: table_size(state.table),
+          handle_type: handle_type(state.handle)
+        }
+
+        {:reply, info, state}
+      end
+
+      defp table_size(nil), do: 0
+      defp table_size(table), do: :ets.info(table, :size)
+
+      defp handle_type(nil), do: nil
+      defp handle_type(%{__struct__: mod}), do: mod
+      defp handle_type(handle) when is_map(handle), do: :map
+      defp handle_type(_), do: :other
 
       @impl GenServer
       def handle_cast({:set_context, recipe_id, step_name}, state) do
@@ -271,8 +295,10 @@ defmodule QyCore.Instrument do
       end
 
       # ----------------------------------------
-      # Default implementations
+      # Default callback implementations
       # ----------------------------------------
+
+      @impl QyCore.Instrument
       def handle_init(config) do
         name = Keyword.get(config, :name, __MODULE__)
         table = :ets.new(name, [:set, :protected, read_concurrency: true])
@@ -292,23 +318,31 @@ defmodule QyCore.Instrument do
         {:ok, state}
       end
 
+      @impl QyCore.Instrument
       def handle_run(_request, _opts, state) do
         {:error, :not_implemented, state}
       end
 
+      @impl QyCore.Instrument
       def handle_store(key, value, %{table: table, meta: meta} = state) do
-        :ets.insert(table, {key, value, now()})
+        timestamp = System.system_time(:millisecond)
+        :ets.insert(table, {key, value, timestamp})
         ref = {:ref, meta.name, key}
         {:ok, ref, state}
       end
 
+      @impl QyCore.Instrument
       def handle_fetch(key, %{table: table} = state) do
         case :ets.lookup(table, key) do
-          [{^key, value, _ts}] -> {:ok, value, state}
-          [] -> {:error, :not_found, state}
+          [{^key, value, _timestamp}] ->
+            {:ok, value, state}
+
+          [] ->
+            {:error, :not_found, state}
         end
       end
 
+      @impl QyCore.Instrument
       def handle_delete(key, %{table: table} = state) do
         case :ets.lookup(table, key) do
           [{^key, _, _}] ->
@@ -320,16 +354,18 @@ defmodule QyCore.Instrument do
         end
       end
 
+      @impl QyCore.Instrument
       def handle_persist(path, %{table: table} = state) do
         path
         |> to_charlist()
-        |> :ets.tab2file(extended_info: [:md5sum])
+        |> then(&:ets.tab2file(table, &1, extended_info: [:md5sum]))
         |> case do
           :ok -> {:ok, state}
           {:error, reason} -> {:error, reason}
         end
       end
 
+      @impl QyCore.Instrument
       def handle_restore(path, %{table: old_table} = state) do
         # Delete old table if exists
         if old_table, do: :ets.delete(old_table)
@@ -343,39 +379,36 @@ defmodule QyCore.Instrument do
         end
       end
 
+      @impl QyCore.Instrument
       def handle_cleanup(_reason, _state), do: :ok
 
       # ----------------------------------------
       # Key generation
       # ----------------------------------------
-      defp generate_key(%{recipe_id: nil} = meta, _opts) do
-        # No context: use timestamp + counter
+
+      defp generate_key(%{recipe_id: nil, name: name}, _opts) do
         counter = System.unique_integer([:positive, :monotonic])
-        "#{meta.name}/#{counter}"
+        "#{name}/#{counter}"
       end
 
-      defp generate_key(meta, opts) do
-        # With context: recipe_id/step_name/counter
-        suffix = Keyword.get(opts, :suffix, System.unique_integer([:positive, :monotonic]))
-        "#{meta.recipe_id}/#{meta.step_name}/#{suffix}"
+      defp generate_key(%{recipe_id: recipe_id, step_name: step_name}, opts) do
+        suffix = Keyword.get(opts, :key_suffix, System.unique_integer([:positive, :monotonic]))
+        "#{recipe_id}/#{step_name}/#{suffix}"
       end
-
-      defp now, do: System.system_time(:millisecond)
 
       # ----------------------------------------
       # Overridable
       # ----------------------------------------
-      defoverridable [
-        child_spec: 1,
-        handle_init: 1,
-        handle_run: 3,
-        handle_store: 3,
-        handle_fetch: 2,
-        handle_delete: 2,
-        handle_persist: 2,
-        handle_restore: 2,
-        handle_cleanup: 2
-      ]
+
+      defoverridable child_spec: 1,
+                     handle_init: 1,
+                     handle_run: 3,
+                     handle_store: 3,
+                     handle_fetch: 2,
+                     handle_delete: 2,
+                     handle_persist: 2,
+                     handle_restore: 2,
+                     handle_cleanup: 2
     end
   end
 end

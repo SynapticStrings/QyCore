@@ -4,6 +4,14 @@ defmodule QyCore.InstrumentsRegistry do
 
   Maps instrument names to their modules for lookup during Step execution.
   Instruments are supervised separately — this only tracks the mapping.
+
+  ## Usage
+
+      # Register at app start
+      QyCore.InstrumentsRegistry.register(:embedder, MyApp.Instruments.Embedder)
+
+      # Lookup in hooks/steps
+      {:ok, module} = QyCore.InstrumentsRegistry.fetch(:embedder)
   """
 
   use GenServer
@@ -33,7 +41,7 @@ defmodule QyCore.InstrumentsRegistry do
   def fetch!(name, opts \\ []) do
     case fetch(name, opts) do
       {:ok, module} -> module
-      {:error, :not_found} -> raise "Instrument #{inspect(name)} not registered"
+      {:error, :not_found} -> raise ArgumentError, "Instrument #{inspect(name)} not registered"
     end
   end
 
@@ -47,6 +55,14 @@ defmodule QyCore.InstrumentsRegistry do
   def unregister(name, opts \\ []) do
     registry = Keyword.get(opts, :registry, __MODULE__)
     GenServer.call(registry, {:unregister, name})
+  end
+
+  @doc "Check if an instrument is registered"
+  def registered?(name, opts \\ []) do
+    case fetch(name, opts) do
+      {:ok, _} -> true
+      {:error, :not_found} -> false
+    end
   end
 
   # ============================================

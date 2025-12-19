@@ -1,4 +1,4 @@
-defmodule QyCore.Orchid.Executor.GenStage.Worker do
+defmodule Orchid.Executor.GenStage.Worker do
     use GenStage
 
     def start_link(producer_pid, id) do
