@@ -23,7 +23,8 @@ defmodule QyCore.MixProject do
   defp deps do
     [
       {:orchid, "~> 0.3"},
-      {:gen_stage, "~> 1.3.2"}
+      {:gen_stage, "~> 1.3.2"},
+      {:nx, "~> 0.10"}
     ]
   end
 end
