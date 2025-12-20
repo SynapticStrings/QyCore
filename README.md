@@ -7,7 +7,7 @@ QyCore integrates OTP to achieve resource management, fault tolerance, data pers
 * Orchid = DAG + Light Concepts(Scheduler/Executor/Runner/Hooks)
 * QyCore = OTP runtime(Instrument registry + Large param injection + optional persistence/hydrate/dehydrate) + Orchid
 
-Currently, over 70% code generated from Calude 4 Opus.
+Currently, over 70% code generated from Claude 4 Opus.
 
 I can ensure the examples are the final apprearance of [QyEditor](https://github.com/SynapticStrings/QyEditor), but the code with HLGHLY infomation density makes me a bit overwhelmed.
 
