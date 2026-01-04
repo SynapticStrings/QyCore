@@ -9,9 +9,19 @@ QyCore integrates OTP to achieve resource management, fault tolerance, data pers
 
 Currently, over 70% code generated from Claude 4 Opus.
 
-I can ensure the examples are the final apprearance of [QyEditor](https://github.com/SynapticStrings/QyEditor), but the code with HLGHLY infomation density makes me a bit overwhelmed.
+I can ensure the examples are the final apprearance of [QyEditor](https://github.com/SynapticStrings/QyEditor), but the code with HLGHLY information density makes me overwhelmed.
 
 So this repo/branch/codebase were temporary archived until I know can figure out clearly and re-implement it by myself.
+
+## Process
+
+* [x] Core
+  * [`:orchid`](https://github.com/SynapticStrings/Orchid)
+* [x] Dependencies Injection (`QyCore.Instrument`)
+  * [`:orchid_symbiont`](https://github.com/SynapticStrings/OrchidSymbiont)
+* [ ] `NxServing` integration
+* [ ] Cache
+* [ ] Persistance
 
 ## Examples
 
